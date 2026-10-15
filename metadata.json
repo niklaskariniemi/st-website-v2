@@ -1,0 +1,6 @@
+{
+  "name": "Salkin Tech",
+  "description": "Salkin Tech helps growing businesses automate cloud infrastructure, modernize legacy data pipelines, and build custom web and mobile apps without the cost of full-time hiring.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
