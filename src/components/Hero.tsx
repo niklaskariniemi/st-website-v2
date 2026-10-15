@@ -51,7 +51,7 @@ export const Hero: React.FC = () => {
               <strong className="text-white font-semibold">
                 Legacy Data Modernization
               </strong>{' '}
-              systems, and ship custom web and mobile software—all without the delay,
+              systems, and ship custom web and mobile software, all without the delay,
               risk, or friction of hiring full-time engineering teams.
             </p>
 
