@@ -48,6 +48,7 @@ app.get('/api/firebase-config', (_req: Request, res: Response) => {
     authDomain: process.env.FIREBASE_AUTH_DOMAIN || 'gen-lang-client-0063610951.firebaseapp.com',
     storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'gen-lang-client-0063610951.firebasestorage.app',
     messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || '631871076833',
+    measurementId: process.env.VITE_GA_MEASUREMENT_ID || process.env.GA_MEASUREMENT_ID || '',
     oAuthClientId: process.env.FIREBASE_OAUTH_CLIENT_ID || '631871076833-edg4e2u7tvsspvlcv0p7t9aooa99b4ar.apps.googleusercontent.com',
   });
 });

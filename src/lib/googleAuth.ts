@@ -53,6 +53,13 @@ async function getAuthClient(): Promise<{ auth: Auth; provider: GoogleAuthProvid
         finalConfig.apiKey = (import.meta as any).env.VITE_FIREBASE_API_KEY;
       }
 
+      if (!finalConfig.measurementId) {
+        finalConfig.measurementId =
+          (import.meta as any).env?.VITE_GA_MEASUREMENT_ID ||
+          (import.meta as any).env?.GA_MEASUREMENT_ID ||
+          '';
+      }
+
       if (getApps().length === 0) {
         appInstance = initializeApp(finalConfig);
       } else {
