@@ -6,12 +6,14 @@ import {
   CheckCircle2,
   RefreshCw,
   Plus,
-  Trash2,
   AlertCircle,
   Database,
-  ArrowRight,
   LogOut,
   User as UserIcon,
+  UploadCloud,
+  Check,
+  Clock,
+  Sparkles,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -29,6 +31,16 @@ import {
 } from '../lib/sheetsCrm';
 import { trackEvent } from '../lib/analytics';
 
+interface StoredLeadItem {
+  referenceId: string;
+  name: string;
+  email: string;
+  service: string;
+  scope: string;
+  timestamp: string;
+  syncedToSheets: boolean;
+}
+
 interface SheetsCrmModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -44,8 +56,11 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [sheetInfo, setSheetInfo] = useState<CrmSheetInfo | null>(null);
-  const [leads, setLeads] = useState<LeadRecord[]>([]);
+  const [sheetLeads, setSheetLeads] = useState<LeadRecord[]>([]);
+  const [storedLeads, setStoredLeads] = useState<StoredLeadItem[]>([]);
   const [loadingSheet, setLoadingSheet] = useState(false);
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncSuccessMsg, setSyncSuccessMsg] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [testLeadSent, setTestLeadSent] = useState(false);
 
@@ -60,18 +75,37 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
         setCurrentUser(null);
         setAccessToken(null);
         setSheetInfo(null);
-        setLeads([]);
+        setSheetLeads([]);
       }
     );
     return () => unsubscribe();
   }, []);
 
-  // When token is available, load or create the CRM sheet
+  // Fetch server stored leads whenever modal opens
+  useEffect(() => {
+    if (isOpen) {
+      fetchServerLeads();
+    }
+  }, [isOpen]);
+
+  // When token is available and modal is open, load or create the CRM sheet
   useEffect(() => {
     if (accessToken && isOpen) {
       loadCrmSheet(accessToken);
     }
   }, [accessToken, isOpen]);
+
+  const fetchServerLeads = async () => {
+    try {
+      const res = await fetch('/api/leads');
+      if (res.ok) {
+        const data = await res.json();
+        setStoredLeads(data.leads || []);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch server stored leads:', err);
+    }
+  };
 
   const loadCrmSheet = async (token: string) => {
     setLoadingSheet(true);
@@ -82,11 +116,13 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
       if (onSheetConnected) onSheetConnected(sheet);
 
       const records = await fetchLeadsFromSpreadsheet(token, sheet.spreadsheetId);
-      setLeads(records);
+      setSheetLeads(records);
       trackEvent('sheets_crm_loaded', { leadCount: records.length });
     } catch (err: any) {
       console.error('Error loading CRM sheet:', err);
-      setErrorMessage(err.message || 'Failed to connect to Google Sheets CRM.');
+      setErrorMessage(
+        err.message || 'Failed to connect to Google Sheets CRM. Please verify your Google account permissions.'
+      );
     } finally {
       setLoadingSheet(false);
     }
@@ -104,7 +140,7 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
       }
     } catch (err: any) {
       console.error('Sign-in failed:', err);
-      setErrorMessage(err.message || 'Sign-in failed. Please try again.');
+      setErrorMessage(err.message || 'Google Sign-In failed. Please try again.');
       trackEvent('google_signin_error', { error: err.message });
     } finally {
       setIsAuthenticating(false);
@@ -116,8 +152,70 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
     setCurrentUser(null);
     setAccessToken(null);
     setSheetInfo(null);
-    setLeads([]);
+    setSheetLeads([]);
     trackEvent('google_signout');
+  };
+
+  const handleSyncPendingLeads = async () => {
+    if (!accessToken || !sheetInfo) {
+      setErrorMessage('Please connect your Google account first to sync leads.');
+      return;
+    }
+
+    setSyncingAll(true);
+    setErrorMessage('');
+    setSyncSuccessMsg('');
+
+    try {
+      // Find leads that need syncing
+      const leadsToSync = storedLeads;
+      if (leadsToSync.length === 0) {
+        setSyncSuccessMsg('No stored leads found to sync.');
+        setSyncingAll(false);
+        return;
+      }
+
+      let successCount = 0;
+      const syncedIds: string[] = [];
+
+      for (const lead of leadsToSync) {
+        try {
+          await appendLeadToSpreadsheet(accessToken, sheetInfo.spreadsheetId, {
+            referenceId: lead.referenceId,
+            name: lead.name,
+            email: lead.email,
+            service: lead.service,
+            scope: lead.scope,
+          });
+          successCount++;
+          syncedIds.push(lead.referenceId);
+        } catch (itemErr) {
+          console.warn(`Failed to sync lead ${lead.referenceId}:`, itemErr);
+        }
+      }
+
+      // Mark leads as synced in server
+      if (syncedIds.length > 0) {
+        await fetch('/api/leads/mark-synced', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ referenceIds: syncedIds }),
+        });
+      }
+
+      // Refresh sheets & local state
+      const updatedSheetRecords = await fetchLeadsFromSpreadsheet(accessToken, sheetInfo.spreadsheetId);
+      setSheetLeads(updatedSheetRecords);
+      await fetchServerLeads();
+
+      setSyncSuccessMsg(`Successfully synced ${successCount} lead(s) to your Google Sheet!`);
+      setTimeout(() => setSyncSuccessMsg(''), 5000);
+    } catch (err: any) {
+      console.error('Sync failed:', err);
+      setErrorMessage(err.message || 'Failed to sync leads to Google Sheets.');
+    } finally {
+      setSyncingAll(false);
+    }
   };
 
   const handleSendTestLead = async () => {
@@ -127,14 +225,14 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
       const testRef = `ST-TEST-${Math.floor(1000 + Math.random() * 9000)}`;
       await appendLeadToSpreadsheet(accessToken, sheetInfo.spreadsheetId, {
         referenceId: testRef,
-        name: 'Sample Enterprise Client',
-        email: 'lead@enterprise-sample.com',
+        name: 'Enterprise Test Client',
+        email: 'client@example.com',
         service: 'Cloud Architecture & DevOps Automation',
         scope: 'Automated test CRM lead entry verification from Salkin Tech website.',
       });
 
       const updated = await fetchLeadsFromSpreadsheet(accessToken, sheetInfo.spreadsheetId);
-      setLeads(updated);
+      setSheetLeads(updated);
       setTestLeadSent(true);
       setTimeout(() => setTestLeadSent(false), 3000);
       trackEvent('crm_test_lead_appended', { referenceId: testRef });
@@ -148,12 +246,12 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
-      <div className="bg-[#111d13] text-gray-200 w-full max-w-4xl rounded-2xl border border-[#5f985d]/40 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
+      <div className="bg-[#111d13] text-gray-200 w-full max-w-4xl rounded-2xl border border-[#5f985d]/40 shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between bg-[#162518]">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-[#111d13] border border-[#5f985d] flex items-center justify-center text-[#5f985d]">
+            <div className="w-10 h-10 rounded-lg bg-[#111d13] border border-[#5f985d] flex items-center justify-center text-[#5f985d]">
               <FileSpreadsheet className="w-5 h-5" />
             </div>
             <div>
@@ -161,7 +259,7 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
                 Google Sheets Leads CRM
               </h3>
               <p className="text-xs text-gray-400 font-mono">
-                Automated Pipeline for Website Leads &bull; Salkin Tech
+                Website Inquiry Pipeline &bull; Salkin Tech
               </p>
             </div>
           </div>
@@ -184,19 +282,24 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
             </div>
           )}
 
+          {syncSuccessMsg && (
+            <div className="p-4 rounded-xl bg-green-950/60 border border-green-800/80 text-green-200 text-xs flex items-start gap-2.5">
+              <Check className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+              <span>{syncSuccessMsg}</span>
+            </div>
+          )}
+
           {!currentUser ? (
-            /* Not Signed In: Official Sign in with Google Button */
+            /* Not Signed In State: Connect Google Account */
             <div className="text-center py-10 px-4 bg-[#162518] rounded-xl border border-gray-800 max-w-xl mx-auto">
               <div className="w-14 h-14 rounded-full bg-[#5f985d]/10 text-[#5f985d] flex items-center justify-center mx-auto mb-4">
                 <Database className="w-7 h-7" />
               </div>
               <h4 className="text-lg font-bold text-white mb-2">
-                Connect Your Google Sheets CRM
+                Connect Google Account to Sync CRM Sheet
               </h4>
               <p className="text-sm text-gray-300 max-w-md mx-auto mb-6 leading-relaxed">
-                Connect with your Google account to automatically create and sync all incoming
-                client inquiries to a dedicated Google Sheet CRM with timestamps, project scopes,
-                and statuses.
+                Connect your Google account to authorize Salkin Tech to create and append inquiries directly into your dedicated <strong>Salkin Tech - Leads CRM</strong> Google Sheet.
               </p>
 
               {/* Official Google Sign-In Button */}
@@ -228,11 +331,31 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
               </button>
 
               <div className="mt-4 text-[11px] text-gray-400 font-mono">
-                Requires permission to create and append to your Google Sheets CRM file.
+                Requires Google Drive and Google Sheets permissions to manage your CRM spreadsheet.
               </div>
+
+              {/* Show Stored Leads awaiting sync */}
+              {storedLeads.length > 0 && (
+                <div className="mt-6 pt-4 border-t border-gray-800 text-left">
+                  <div className="text-xs font-mono text-[#5f985d] font-bold mb-2">
+                    &bull; {storedLeads.length} Website Lead(s) Stored &amp; Ready to Sync:
+                  </div>
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                    {storedLeads.slice(0, 5).map((l) => (
+                      <div
+                        key={l.referenceId}
+                        className="text-xs bg-[#111d13] p-2 rounded border border-gray-800 flex items-center justify-between"
+                      >
+                        <span className="font-mono text-white">{l.name} ({l.email})</span>
+                        <span className="text-[10px] text-[#5f985d] font-mono">{l.referenceId}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
-            /* Signed In: Connected CRM Dashboard */
+            /* Signed In State */
             <>
               {/* Account & Sheet Status Cards */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -252,7 +375,7 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
                     )}
                     <div>
                       <div className="text-sm font-bold text-white">
-                        {currentUser.displayName || 'Authorized Admin'}
+                        {currentUser.displayName || 'Authorized Account'}
                       </div>
                       <div className="text-xs text-gray-400 font-mono truncate max-w-[200px]">
                         {currentUser.email}
@@ -274,7 +397,7 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
                   <div>
                     <div className="text-xs font-mono text-[#5f985d] uppercase font-bold flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-[#5f985d]" />
-                      CRM Active &bull; {leads.length} Leads
+                      CRM Active &bull; {sheetLeads.length} Rows in Sheet
                     </div>
                     <div className="text-sm font-bold text-white mt-1 truncate max-w-[220px]">
                       {sheetInfo?.title || 'Salkin Tech - Leads CRM'}
@@ -298,10 +421,20 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
               {/* Action Toolbar */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
                 <div className="text-xs text-gray-400 font-mono">
-                  All website contact form submissions will automatically write to this sheet.
+                  {storedLeads.length} lead(s) captured by website. Click &ldquo;Sync Leads to Sheet&rdquo; to populate Google Sheets.
                 </div>
 
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSyncPendingLeads}
+                    disabled={syncingAll || loadingSheet || storedLeads.length === 0}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-[#5f985d] hover:bg-[#4e824c] rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    <UploadCloud className={`w-3.5 h-3.5 ${syncingAll ? 'animate-bounce' : ''}`} />
+                    <span>{syncingAll ? 'Syncing...' : `Sync All Leads (${storedLeads.length})`}</span>
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => accessToken && loadCrmSheet(accessToken)}
@@ -316,10 +449,10 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
                     type="button"
                     onClick={handleSendTestLead}
                     disabled={loadingSheet}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-[#5f985d] hover:bg-[#4e824c] rounded-lg transition-colors"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-mono text-gray-300 bg-[#162518] hover:bg-[#1f3523] border border-gray-700 rounded-lg transition-colors"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>{testLeadSent ? 'Test Lead Added!' : 'Add Sample Lead'}</span>
+                    <Plus className="w-3.5 h-3.5 text-[#5f985d]" />
+                    <span>{testLeadSent ? 'Added!' : 'Add Test Lead'}</span>
                   </button>
                 </div>
               </div>
@@ -328,16 +461,16 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
               <div className="border border-gray-800 rounded-xl overflow-hidden bg-[#162518]">
                 <div className="px-4 py-3 bg-[#111d13] border-b border-gray-800 flex items-center justify-between">
                   <span className="text-xs font-mono font-bold uppercase text-gray-300 tracking-wider">
-                    Recent Captured Leads in Google Sheet
+                    Captured Leads Pipeline
                   </span>
                   <span className="text-xs font-mono text-[#5f985d]">
-                    Live Synced Rows: {leads.length}
+                    Total Captured: {storedLeads.length} &bull; Sheet Rows: {sheetLeads.length}
                   </span>
                 </div>
 
-                {leads.length === 0 ? (
+                {storedLeads.length === 0 && sheetLeads.length === 0 ? (
                   <div className="p-8 text-center text-sm text-gray-400">
-                    No leads recorded yet. Submit the website contact form or click &ldquo;Add Sample Lead&rdquo; to test.
+                    No leads recorded yet. Submit the contact form on the website or click &ldquo;Add Test Lead&rdquo;.
                   </div>
                 ) : (
                   <div className="overflow-x-auto max-h-72">
@@ -349,14 +482,14 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
                           <th className="px-4 py-2.5">Client Name</th>
                           <th className="px-4 py-2.5">Email</th>
                           <th className="px-4 py-2.5">Focus Area</th>
-                          <th className="px-4 py-2.5">Status</th>
+                          <th className="px-4 py-2.5">Sync Status</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-800/80 font-mono">
-                        {leads.map((lead, idx) => (
+                        {storedLeads.map((lead, idx) => (
                           <tr key={lead.referenceId || idx} className="hover:bg-[#1f3523]/40 transition-colors">
                             <td className="px-4 py-2.5 text-gray-400 whitespace-nowrap">
-                              {lead.timestamp}
+                              {new Date(lead.timestamp).toLocaleDateString()}
                             </td>
                             <td className="px-4 py-2.5 text-[#5f985d] font-bold">
                               {lead.referenceId}
@@ -373,9 +506,17 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
                               {lead.service}
                             </td>
                             <td className="px-4 py-2.5">
-                              <span className="px-2 py-0.5 rounded text-[10px] bg-[#5f985d]/20 text-[#5f985d] border border-[#5f985d]/40">
-                                {lead.status}
-                              </span>
+                              {lead.syncedToSheets ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-green-950/80 text-green-300 border border-green-800/60">
+                                  <Check className="w-3 h-3" />
+                                  <span>Synced</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-yellow-950/80 text-yellow-300 border border-yellow-800/60">
+                                  <Clock className="w-3 h-3" />
+                                  <span>Stored</span>
+                                </span>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -390,7 +531,7 @@ export const SheetsCrmModal: React.FC<SheetsCrmModalProps> = ({
 
         {/* Footer */}
         <div className="px-6 py-3 border-t border-gray-800 bg-[#162518] flex items-center justify-between text-xs text-gray-400">
-          <span>Google Drive &amp; Google Sheets API Integration</span>
+          <span>Connected via Google Workspace APIs</span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 text-xs font-semibold text-white bg-[#5f985d] hover:bg-[#4e824c] rounded-md transition-colors"

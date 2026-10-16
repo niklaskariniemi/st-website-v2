@@ -25,9 +25,17 @@ export default function App() {
     initGA();
     trackPageView(window.location.pathname + window.location.hash);
 
+    // Initial check for #crm or #admin hash
+    if (window.location.hash === '#crm' || window.location.hash === '#admin') {
+      setCrmOpen(true);
+    }
+
     // Track hash changes as virtual pageviews
     const handleHashChange = () => {
       const currentHash = window.location.hash || '#hero';
+      if (currentHash === '#crm' || currentHash === '#admin') {
+        setCrmOpen(true);
+      }
       trackPageView(window.location.pathname + currentHash, `Salkin Tech - ${currentHash}`);
     };
 
@@ -71,6 +79,7 @@ export default function App() {
 
       {/* Global Footer */}
       <Footer
+        onOpenCrm={() => setCrmOpen(true)}
         onOpenLegal={(type) => setLegalModalType(type)}
       />
 
